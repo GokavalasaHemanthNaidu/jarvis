@@ -843,26 +843,13 @@ async def _execute_research(target: str, ws=None):
 
 
 async def _focus_terminal_window(project_name: str):
-    """Bring a Terminal window matching the project name to front."""
-    escaped = project_name.replace('"', '\\"')
-    script = f'''
-tell application "Terminal"
-    repeat with w in windows
-        if name of w contains "{escaped}" then
-            set index of w to 1
-            activate
-            exit repeat
-        end if
-    end repeat
-end tell
-'''
+    """Bring a terminal window matching the project name to front (Windows)."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=5)
+        import pygetwindow as gw
+        for w in gw.getAllWindows():
+            if w.title and project_name.lower() in w.title.lower():
+                w.activate()
+                break
     except Exception:
         pass
 
@@ -1271,45 +1258,20 @@ def _refresh_context_sync():
             try:
                 # Screen — fast
                 try:
-                    proc = __import__("subprocess").run(
-                        ["osascript", "-e", '''
-set windowList to ""
-tell application "System Events"
-    set frontApp to name of first application process whose frontmost is true
-    set visibleApps to every application process whose visible is true
-    repeat with proc in visibleApps
-        set appName to name of proc
-        try
-            set winCount to count of windows of proc
-            if winCount > 0 then
-                repeat with w in (windows of proc)
-                    try
-                        set winTitle to name of w
-                        if winTitle is not "" and winTitle is not missing value then
-                            set windowList to windowList & appName & "|||" & winTitle & "|||" & (appName = frontApp) & linefeed
-                        end if
-                    end try
-                end repeat
-            end if
-        end try
-    end repeat
-end tell
-return windowList
-'''],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if proc.returncode == 0 and proc.stdout.strip():
-                        windows = []
-                        for line in proc.stdout.strip().split("\n"):
-                            parts = line.strip().split("|||")
-                            if len(parts) >= 3:
-                                windows.append({
-                                    "app": parts[0].strip(),
-                                    "title": parts[1].strip(),
-                                    "frontmost": parts[2].strip().lower() == "true",
-                                })
-                        if windows:
-                            _ctx_cache["screen"] = format_windows_for_context(windows)
+                    import pygetwindow as gw
+                    all_wins = gw.getAllWindows()
+                    active_win = gw.getActiveWindow()
+                    active_title = active_win.title if active_win else ""
+                    windows = []
+                    for w in all_wins:
+                        if w.title and w.title.strip() and w.visible:
+                            windows.append({
+                                "app": w.title.split(" - ")[-1] if " - " in w.title else w.title,
+                                "title": w.title,
+                                "frontmost": w.title == active_title,
+                            })
+                    if windows:
+                        _ctx_cache["screen"] = format_windows_for_context(windows)
                 except Exception:
                     pass
 
@@ -1539,17 +1501,17 @@ async def handle_build(target: str) -> str:
     prompt_file = Path(path) / ".jarvis_prompt.txt"
     prompt_file.write_text(target)
 
-    script = (
-        'tell application "Terminal"\n'
-        "    activate\n"
-        f'    do script "cd {path} && cat .jarvis_prompt.txt | claude -p --dangerously-skip-permissions"\n'
-        "end tell"
-    )
-    await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    import subprocess as _subprocess
+    command = f"cd '{path}'; Get-Content '.jarvis_prompt.txt' | claude -p --dangerously-skip-permissions"
+    try:
+        _subprocess.Popen(
+            ["wt", "-w", "0", "new-tab", "powershell", "-NoExit", "-Command", command],
+        )
+    except FileNotFoundError:
+        _subprocess.Popen(
+            ["powershell", "-NoExit", "-Command", command],
+            creationflags=_subprocess.CREATE_NEW_CONSOLE,
+        )
 
     recently_built.append({"name": name, "path": path, "time": time.time()})
     return f"On it, sir. Claude Code is working in {name}."
@@ -1574,10 +1536,10 @@ async def handle_show_recent() -> str:
         await open_browser(f"file://{html_files[0]}")
         return f"Opened {html_files[0].name} from {last['name']}, sir."
 
-    # Fall back to opening the folder in Finder
-    script = f'tell application "Finder"\nactivate\nopen POSIX file "{last["path"]}"\nend tell'
-    await asyncio.create_subprocess_exec("osascript", "-e", script, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    return f"Opened the {last['name']} folder in Finder, sir."
+    # Fall back to opening the folder in Explorer (Windows)
+    import subprocess as _subprocess
+    _subprocess.Popen(["explorer", last["path"]])
+    return f"Opened the {last['name']} folder in Explorer, sir."
 
 
 # ---------------------------------------------------------------------------
@@ -2521,20 +2483,19 @@ async def api_restart():
 @app.post("/api/fix-self")
 async def api_fix_self():
     """Enter work mode in the JARVIS repo — JARVIS can now fix himself."""
+    import subprocess
+    import sys
     jarvis_dir = str(Path(__file__).parent)
-    # The work_session is per-WebSocket, so we set a flag that the handler picks up
-    # For now, also open Terminal so user can see
-    script = (
-        'tell application "Terminal"\n'
-        '    activate\n'
-        f'    do script "cd {jarvis_dir} && claude --dangerously-skip-permissions"\n'
-        'end tell'
-    )
-    await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    command = f"cd '{jarvis_dir}'; claude --dangerously-skip-permissions"
+    try:
+        subprocess.Popen(
+            ["wt", "-w", "0", "new-tab", "powershell", "-NoExit", "-Command", command],
+        )
+    except FileNotFoundError:
+        subprocess.Popen(
+            ["powershell", "-NoExit", "-Command", command],
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
     log.info("Work mode: JARVIS repo opened for self-improvement")
     return {"status": "work_mode_active", "path": jarvis_dir}
 

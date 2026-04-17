@@ -1,5 +1,5 @@
 """
-JARVIS Action Executor — AppleScript-based system actions.
+JARVIS Action Executor — Windows-native system actions.
 
 Execute actions IMMEDIATELY, before generating any LLM response.
 Each function returns {"success": bool, "confirmation": str}.
@@ -9,7 +9,9 @@ import asyncio
 import logging
 import os
 import re
+import subprocess
 import time
+import webbrowser
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,135 +20,87 @@ log = logging.getLogger("jarvis.actions")
 DESKTOP_PATH = Path.home() / "Desktop"
 
 
-async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
-    """Temporarily set the front Terminal window to Ocean theme, then revert.
-
-    Shows the user JARVIS is active in that terminal. Reverts after revert_after seconds.
-    """
-    # Save the current profile, switch to Ocean, then revert
-    script_save = (
-        'tell application "Terminal"\n'
-        '    return name of current settings of front window\n'
-        'end tell'
-    )
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script_save,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        original_profile = stdout.decode().strip()
-
-        # Switch to Ocean
-        script_set = (
-            'tell application "Terminal"\n'
-            '    set current settings of front window to settings set "Ocean"\n'
-            'end tell'
-        )
-        proc2 = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script_set,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc2.communicate()
-
-        # Schedule revert
-        if original_profile and original_profile != "Ocean":
-            asyncio.get_event_loop().call_later(
-                revert_after,
-                lambda: asyncio.ensure_future(_revert_terminal_theme(original_profile))
-            )
-    except Exception:
-        pass
-
-
-async def _revert_terminal_theme(profile_name: str):
-    """Revert a Terminal window back to its original profile."""
-    escaped = profile_name.replace('"', '\\"')
-    script = (
-        'tell application "Terminal"\n'
-        f'    set current settings of front window to settings set "{escaped}"\n'
-        'end tell'
-    )
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
-    except Exception:
-        pass
-
-
 async def open_terminal(command: str = "") -> dict:
-    """Open Terminal.app and optionally run a command. Marks it blue for JARVIS."""
-    if command:
-        escaped = command.replace('"', '\\"')
-        script = (
-            'tell application "Terminal"\n'
-            "    activate\n"
-            f'    do script "{escaped}"\n'
-            "end tell"
-        )
-    else:
-        script = (
-            'tell application "Terminal"\n'
-            "    activate\n"
-            "end tell"
-        )
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    success = proc.returncode == 0
-    if not success:
-        log.error(f"open_terminal failed: {stderr.decode()}")
-    else:
-        await _mark_terminal_as_jarvis()
-    return {
-        "success": success,
-        "confirmation": "Terminal is open, sir." if success else "I had trouble opening Terminal, sir.",
-    }
+    """Open Windows Terminal (or PowerShell) and optionally run a command."""
+    try:
+        if command:
+            # Try Windows Terminal first, fall back to PowerShell
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "wt", "-w", "0", "new-tab", "powershell", "-NoExit", "-Command", command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=5)
+                success = proc.returncode == 0
+            except FileNotFoundError:
+                # Fall back to PowerShell directly
+                subprocess.Popen(
+                    ["powershell", "-NoExit", "-Command", command],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+                success = True
+        else:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "wt",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=5)
+                success = proc.returncode == 0
+            except FileNotFoundError:
+                subprocess.Popen(
+                    ["powershell"],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+                success = True
+
+        return {
+            "success": success,
+            "confirmation": "Terminal is open, sir." if success else "I had trouble opening Terminal, sir.",
+        }
+    except Exception as e:
+        log.error(f"open_terminal failed: {e}")
+        return {"success": False, "confirmation": "I had trouble opening Terminal, sir."}
 
 
 async def open_browser(url: str, browser: str = "chrome") -> dict:
-    """Open URL in user's browser (Chrome or Firefox)."""
-    escaped_url = url.replace('"', '\\"')
+    """Open URL in the default browser (or Chrome/Firefox if available)."""
+    try:
+        if browser.lower() == "firefox":
+            try:
+                subprocess.Popen(["firefox", url])
+                app_name = "Firefox"
+                success = True
+            except FileNotFoundError:
+                webbrowser.open(url)
+                app_name = "your browser"
+                success = True
+        else:
+            # Try Chrome explicitly, fall back to default browser
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ]
+            chrome_found = False
+            for chrome_path in chrome_paths:
+                if Path(chrome_path).exists():
+                    subprocess.Popen([chrome_path, url])
+                    chrome_found = True
+                    break
+            if not chrome_found:
+                webbrowser.open(url)
+            app_name = "Chrome" if chrome_found else "your browser"
+            success = True
 
-    if browser.lower() == "firefox":
-        app_name = "Firefox"
-        script = (
-            'tell application "Firefox"\n'
-            "    activate\n"
-            f'    open location "{escaped_url}"\n'
-            "end tell"
-        )
-    else:
-        app_name = "Chrome"
-        script = (
-            'tell application "Google Chrome"\n'
-            "    activate\n"
-            f'    open location "{escaped_url}"\n'
-            "end tell"
-        )
-
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    success = proc.returncode == 0
-    if not success:
-        log.error(f"open_browser ({app_name}) failed: {stderr.decode()}")
-    return {
-        "success": success,
-        "confirmation": f"Pulled that up in {app_name}, sir." if success else f"{app_name} ran into a problem, sir.",
-    }
+        return {
+            "success": success,
+            "confirmation": f"Pulled that up in {app_name}, sir.",
+        }
+    except Exception as e:
+        log.error(f"open_browser failed: {e}")
+        return {"success": False, "confirmation": "Browser ran into a problem, sir."}
 
 
 # Keep backward compat
@@ -155,151 +109,49 @@ async def open_chrome(url: str) -> dict:
 
 
 async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
-    """Open Terminal, cd to project dir, run Claude Code interactively.
-
-    Writes the prompt to CLAUDE.md (which claude reads automatically on startup)
-    then launches claude in interactive mode with --dangerously-skip-permissions.
-    No prompt escaping needed — CLAUDE.md handles context delivery.
-    """
+    """Open a new PowerShell window, cd to project dir, run Claude Code."""
     # Write prompt to CLAUDE.md — claude reads this automatically
     claude_md = Path(project_dir) / "CLAUDE.md"
-    claude_md.write_text(f"# Task\n\n{prompt}\n\nBuild this completely. If web app, make index.html work standalone.\n")
+    claude_md.write_text(
+        f"# Task\n\n{prompt}\n\nBuild this completely. If web app, make index.html work standalone.\n"
+    )
 
-    # Launch claude interactive — it reads CLAUDE.md on its own
-    script = (
-        'tell application "Terminal"\n'
-        "    activate\n"
-        f'    do script "cd {project_dir} && claude --dangerously-skip-permissions"\n'
-        "end tell"
-    )
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    success = proc.returncode == 0
-    if not success:
-        log.error(f"open_claude_in_project failed: {stderr.decode()}")
-    else:
-        await _mark_terminal_as_jarvis()
-    return {
-        "success": success,
-        "confirmation": "Claude Code is running in Terminal, sir. You can watch the progress."
-        if success
-        else "Had trouble spawning Claude Code, sir.",
-    }
+    try:
+        command = f"cd '{project_dir}'; claude --dangerously-skip-permissions"
+        try:
+            subprocess.Popen(
+                ["wt", "-w", "0", "new-tab", "powershell", "-NoExit", "-Command", command],
+            )
+        except FileNotFoundError:
+            subprocess.Popen(
+                ["powershell", "-NoExit", "-Command", command],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+        return {
+            "success": True,
+            "confirmation": "Claude Code is running in a new terminal, sir. You can watch the progress.",
+        }
+    except Exception as e:
+        log.error(f"open_claude_in_project failed: {e}")
+        return {"success": False, "confirmation": "Had trouble spawning Claude Code, sir."}
 
 
 async def prompt_existing_terminal(project_name: str, prompt: str) -> dict:
-    """Find a Terminal window matching a project name and type a prompt into it.
-
-    Uses System Events keystroke to type into an active Claude Code session
-    rather than `do script` which would open a new shell.
-    """
-    escaped_name = project_name.replace('"', '\\"')
-    escaped_prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
-
-    # Single atomic script: find window, focus it, type into it
-    script = f'''
-tell application "Terminal"
-    set matched to false
-    set targetWindow to missing value
-    repeat with w in windows
-        if name of w contains "{escaped_name}" then
-            set targetWindow to w
-            set matched to true
-            exit repeat
-        end if
-    end repeat
-
-    if not matched then
-        return "NOT_FOUND"
-    end if
-
-    -- Bring the matched window to front
-    set index of targetWindow to 1
-    set selected tab of targetWindow to selected tab of targetWindow
-    activate
-end tell
-
--- Wait for window to be fully focused
-delay 1
-
--- Now type into it
-tell application "System Events"
-    tell process "Terminal"
-        set frontmost to true
-        delay 0.3
-        keystroke "{escaped_prompt}"
-        delay 0.2
-        keystroke return
-    end tell
-end tell
-
-return "OK"
-'''
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-
-        result = stdout.decode().strip()
-        if result == "NOT_FOUND":
-            return {
-                "success": False,
-                "confirmation": f"Couldn't find a terminal for {project_name}, sir.",
-            }
-
-        success = proc.returncode == 0
-        if not success:
-            log.error(f"prompt_existing_terminal failed: {stderr.decode()[:200]}")
-
-        if success:
-            await _mark_terminal_as_jarvis()
-
+    """On Windows, we open a new terminal for the project (no keystroke injection)."""
+    # Windows doesn't support AppleScript keystroke injection — open fresh terminal
+    project_dir = str(DESKTOP_PATH / project_name)
+    if Path(project_dir).exists():
+        return await open_claude_in_project(project_dir, prompt)
+    else:
         return {
-            "success": success,
-            "confirmation": f"Sent that to {project_name}, sir." if success
-            else f"Had trouble typing into {project_name}, sir.",
+            "success": False,
+            "confirmation": f"Couldn't find project {project_name} on Desktop, sir.",
         }
-
-    except asyncio.TimeoutError:
-        return {"success": False, "confirmation": "Terminal operation timed out, sir."}
-    except Exception as e:
-        log.error(f"prompt_existing_terminal failed: {e}")
-        return {"success": False, "confirmation": "Something went wrong reaching that terminal, sir."}
 
 
 async def get_chrome_tab_info() -> dict:
-    """Read the current Chrome tab's title and URL via AppleScript."""
-    script = (
-        'tell application "Google Chrome"\n'
-        "    set tabTitle to title of active tab of front window\n"
-        "    set tabURL to URL of active tab of front window\n"
-        '    return tabTitle & "|" & tabURL\n'
-        "end tell"
-    )
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode == 0:
-            result = stdout.decode().strip()
-            parts = result.split("|", 1)
-            if len(parts) == 2:
-                return {"title": parts[0], "url": parts[1]}
-        return {}
-    except Exception as e:
-        log.warning(f"get_chrome_tab_info failed: {e}")
-        return {}
+    """On Windows, we can't read Chrome tabs without extensions — return empty."""
+    return {}
 
 
 async def monitor_build(project_dir: str, ws=None, synthesize_fn=None) -> None:
@@ -385,7 +237,6 @@ def _generate_project_name(prompt: str) -> str:
     quoted = re.search(r'"([^"]+)"', prompt)
     if quoted:
         name = quoted.group(1).strip()
-        # Already kebab-case or close to it
         name = re.sub(r"[^a-zA-Z0-9\s-]", "", name).strip()
         if name:
             return re.sub(r"[\s]+", "-", name.lower())

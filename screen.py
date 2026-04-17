@@ -1,14 +1,13 @@
 """
-JARVIS Screen Awareness — see what's on the user's screen.
+JARVIS Screen Awareness — Windows version.
 
 Two capabilities:
-1. Window/app list via AppleScript (fast, text-based)
-2. Screenshot via screencapture → Claude vision API (sees everything)
+1. Window/app list via pygetwindow (fast, text-based)
+2. Screenshot via PIL/mss -> Claude vision API (sees everything)
 """
 
 import asyncio
 import base64
-import json
 import logging
 import tempfile
 from pathlib import Path
@@ -17,61 +16,28 @@ log = logging.getLogger("jarvis.screen")
 
 
 async def get_active_windows() -> list[dict]:
-    """Get list of visible windows with app name, window title, and position.
+    """Get list of visible windows with app name and window title.
 
-    Uses AppleScript + System Events to enumerate windows.
+    Uses pygetwindow on Windows.
     Returns list of {"app": str, "title": str, "frontmost": bool}.
     """
-    # Use a simpler approach that's more permission-friendly
-    script = """
-set windowList to ""
-tell application "System Events"
-    set frontApp to name of first application process whose frontmost is true
-    set visibleApps to every application process whose visible is true
-    repeat with proc in visibleApps
-        set appName to name of proc
-        try
-            set winCount to count of windows of proc
-            if winCount > 0 then
-                repeat with w in (windows of proc)
-                    try
-                        set winTitle to name of w
-                        if winTitle is not "" and winTitle is not missing value then
-                            set windowList to windowList & appName & "|||" & winTitle & "|||" & (appName = frontApp) & linefeed
-                        end if
-                    end try
-                end repeat
-            end if
-        end try
-    end repeat
-end tell
-return windowList
-"""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
-
-        if proc.returncode != 0:
-            log.warning(f"get_active_windows failed: {stderr.decode()[:200]}")
-            return []
-
+        import pygetwindow as gw
         windows = []
-        for line in stdout.decode().strip().split("\n"):
-            parts = line.strip().split("|||")
-            if len(parts) >= 3:
+        all_windows = gw.getAllWindows()
+        active = gw.getActiveWindow()
+        active_title = active.title if active else ""
+
+        for w in all_windows:
+            if w.title and w.title.strip() and w.visible:
                 windows.append({
-                    "app": parts[0].strip(),
-                    "title": parts[1].strip(),
-                    "frontmost": parts[2].strip().lower() == "true",
+                    "app": w.title.split(" - ")[-1] if " - " in w.title else w.title,
+                    "title": w.title,
+                    "frontmost": w.title == active_title,
                 })
         return windows
-
-    except asyncio.TimeoutError:
-        log.warning("get_active_windows timed out")
+    except ImportError:
+        log.warning("pygetwindow not installed — run: pip install pygetwindow")
         return []
     except Exception as e:
         log.warning(f"get_active_windows error: {e}")
@@ -80,25 +46,17 @@ return windowList
 
 async def get_running_apps() -> list[str]:
     """Get list of running application names (visible only)."""
-    script = """
-tell application "System Events"
-    set appNames to name of every application process whose visible is true
-    set output to ""
-    repeat with a in appNames
-        set output to output & a & linefeed
-    end repeat
-    return output
-end tell
-"""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        if proc.returncode == 0:
-            return [a.strip() for a in stdout.decode().strip().split("\n") if a.strip()]
+        import pygetwindow as gw
+        titles = set()
+        for w in gw.getAllWindows():
+            if w.title and w.visible:
+                # Extract app name from title (last part after " - ")
+                app = w.title.split(" - ")[-1] if " - " in w.title else w.title
+                titles.add(app)
+        return list(titles)
+    except ImportError:
+        log.warning("pygetwindow not installed")
         return []
     except Exception as e:
         log.warning(f"get_running_apps error: {e}")
@@ -108,29 +66,27 @@ end tell
 async def take_screenshot(display_only: bool = True) -> str | None:
     """Take a screenshot and return base64-encoded PNG.
 
-    Args:
-        display_only: If True, capture main display only. If False, all displays.
-
-    Returns:
-        Base64-encoded PNG string, or None on failure.
+    Uses mss (fast, no extra permissions needed on Windows).
+    Falls back to PIL ImageGrab if mss unavailable.
     """
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         tmp_path = f.name
 
     try:
-        cmd = ["screencapture", "-x"]  # -x = no sound
-        if display_only:
-            cmd.append("-m")  # main display only
-        cmd.append(tmp_path)
+        try:
+            import mss
+            import mss.tools
+            with mss.mss() as sct:
+                monitor = sct.monitors[1]  # Primary monitor
+                screenshot = sct.grab(monitor)
+                mss.tools.to_png(screenshot.rgb, screenshot.size, output=tmp_path)
+        except ImportError:
+            # Fall back to PIL
+            from PIL import ImageGrab
+            img = ImageGrab.grab()
+            img.save(tmp_path, "PNG")
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=10)
-
-        if proc.returncode != 0 or not Path(tmp_path).exists():
+        if not Path(tmp_path).exists():
             log.warning("Screenshot capture failed")
             return None
 
@@ -138,9 +94,6 @@ async def take_screenshot(display_only: bool = True) -> str | None:
         log.info(f"Screenshot captured: {len(data)} bytes")
         return base64.b64encode(data).decode()
 
-    except asyncio.TimeoutError:
-        log.warning("Screenshot timed out")
-        return None
     except Exception as e:
         log.warning(f"Screenshot error: {e}")
         return None
