@@ -21,8 +21,9 @@ class Messages:
         if messages:
             ollama_messages.extend(messages)
             
-        # We route everything to llama3 (or phi3 if you prefer) locally
-        ollama_model = "llama3"
+        # The user has an 8GB RAM laptop with low free memory. 
+        # Using a 1B parameter model (llama3.2:1b) which only requires ~1.3GB of RAM.
+        ollama_model = "llama3.2:1b"
 
         try:
             async with httpx.AsyncClient(timeout=120) as client:

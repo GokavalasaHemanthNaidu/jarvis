@@ -1909,7 +1909,7 @@ async def voice_handler(ws: WebSocket):
                 if audio:
                     await ws.send_json({"type": "audio", "data": audio, "text": response_text})
                 else:
-                    await ws.send_json({"type": "text", "text": response_text})
+                    await ws.send_json({"type": "audio", "data": "", "text": response_text})
                 continue
 
             if msg.get("type") != "transcript" or not msg.get("isFinal"):
@@ -2283,8 +2283,7 @@ async def voice_handler(ws: WebSocket):
                 if audio:
                     await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
                 else:
-                    await ws.send_json({"type": "text", "text": response_text})
-                    await ws.send_json({"type": "status", "state": "idle"})
+                    await ws.send_json({"type": "audio", "data": "", "text": response_text})
                 log.info(f"JARVIS: {response_text}")
                 last_jarvis_response = response_text
 
