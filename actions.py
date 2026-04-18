@@ -227,6 +227,27 @@ async def execute_action(intent: dict, projects: list = None) -> dict:
         result["project_dir"] = project_dir
         return result
 
+    elif action == "open_app":
+        from computer_use import open_app as _open_app
+        res = await _open_app(target)
+        return {"success": True, "confirmation": res, "project_dir": None}
+
+    elif action == "type":
+        from computer_use import type_text
+        res = await type_text(target)
+        return {"success": True, "confirmation": res, "project_dir": None}
+
+    elif action == "press":
+        from computer_use import press_key
+        res = await press_key(target)
+        return {"success": True, "confirmation": res, "project_dir": None}
+
+    elif action == "shortcut":
+        from computer_use import shortcut
+        keys = target.split("+")
+        res = await shortcut(keys)
+        return {"success": True, "confirmation": res, "project_dir": None}
+
     else:
         return {"success": False, "confirmation": "", "project_dir": None}
 

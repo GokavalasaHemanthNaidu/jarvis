@@ -194,6 +194,10 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
 - [ACTION:RESEARCH] detailed research brief — when user wants real research with real data. Claude Code will browse the web, find real listings/data, and create a report document. Give it a detailed brief of what to find.
 - [ACTION:OPEN_TERMINAL] — when user just wants a fresh Claude Code terminal with no specific project
+- [ACTION:OPEN_APP] app_name — when user wants you to physically open an application on their Windows computer (e.g. Spotify, Chrome, VS Code)
+- [ACTION:TYPE] text — when user wants you to type text into their currently active application
+- [ACTION:PRESS] key — when user wants you to press a key (e.g. enter, tab, win, esc)
+- [ACTION:SHORTCUT] ctrl+c — when user wants you to perform a keyboard shortcut (separate keys with +)
 CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're LOOKING AT — ALWAYS use [ACTION:SCREEN] or let the fast action system handle it. NEVER use [ACTION:PROMPT_PROJECT] for screen requests. PROMPT_PROJECT is ONLY for working on code projects.
 
 - [ACTION:PROMPT_PROJECT] project_name ||| prompt — THIS IS YOUR MOST POWERFUL ACTION. Use it whenever the user wants to work on, jump into, resume, check on, or interact with ANY existing project. You connect directly to Claude Code in that project and can read its response. Craft a clear prompt based on what the user wants. Examples:
@@ -752,7 +756,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|OPEN_APP|TYPE|PRESS|SHORTCUT)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2173,6 +2177,11 @@ async def voice_handler(ws: WebSocket):
                                     )
                                 elif embedded_action["action"] == "open_terminal":
                                     asyncio.create_task(_execute_open_terminal())
+                                elif embedded_action["action"] in ("open_app", "type", "press", "shortcut"):
+                                    # Forward these directly to execute_action
+                                    asyncio.create_task(
+                                        execute_action(embedded_action["action"], embedded_action["target"])
+                                    )
                                 elif embedded_action["action"] == "prompt_project":
                                     target = embedded_action["target"]
                                     if "|||" in target:
