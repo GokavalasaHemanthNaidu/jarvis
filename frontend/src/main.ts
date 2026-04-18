@@ -117,9 +117,18 @@ socket.onMessage((msg) => {
       }
       audioPlayer.enqueue(audioData);
     } else {
-      // TTS failed — no audio but still need to return to idle
-      console.warn("[audio] no data received, returning to idle");
-      transition("idle");
+      // Fallback to browser TTS if no audio data
+      console.warn("[audio] no data received, falling back to window.speechSynthesis");
+      if (msg.text) {
+        const utterance = new SpeechSynthesisUtterance(msg.text as string);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.onend = () => transition("idle");
+        if (currentState !== "speaking") transition("speaking");
+        window.speechSynthesis.speak(utterance);
+      } else {
+        transition("idle");
+      }
     }
     // Log text for debugging
     if (msg.text) console.log("[JARVIS]", msg.text);
