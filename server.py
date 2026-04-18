@@ -52,9 +52,16 @@ from memory import (
 from notes_access import get_recent_notes, read_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
+from qa import QAAgent
+from tracking import SuccessTracker
+from suggestions import suggest_followup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
+
+# Global QA and tracking instances
+qa_agent = QAAgent()
+success_tracker = SuccessTracker()
 
 # ---------------------------------------------------------------------------
 # Config
@@ -391,21 +398,28 @@ class ClaudeTaskManager:
         prompt_file = Path(work_dir) / ".jarvis_prompt.md"
         prompt_file.write_text(task.prompt)
 
-        # Open Terminal.app with claude running in the project directory
-        applescript = f'''
-        tell application "Terminal"
-            activate
-            set newTab to do script "cd {work_dir} && cat .jarvis_prompt.md | claude -p --dangerously-skip-permissions | tee .jarvis_output.txt; echo '\\n--- JARVIS TASK COMPLETE ---'"
-        end tell
-        '''
-
-        process = await asyncio.create_subprocess_exec(
-            "osascript", "-e", applescript,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await process.communicate()
-        task.pid = process.pid
+        # Run claude -p in a subprocess (Windows-compatible)
+        import shutil
+        claude_path = shutil.which("claude")
+        if claude_path:
+            command = f"cd '{work_dir}'; Get-Content '.jarvis_prompt.md' | claude -p --output-format text --dangerously-skip-permissions | Tee-Object -FilePath '.jarvis_output.txt'; Add-Content '.jarvis_output.txt' '`n--- JARVIS TASK COMPLETE ---'"
+            try:
+                import subprocess as _sp
+                _sp.Popen(
+                    ["wt", "-w", "0", "new-tab", "powershell", "-NoExit", "-Command", command],
+                )
+            except FileNotFoundError:
+                import subprocess as _sp
+                _sp.Popen(
+                    ["powershell", "-NoExit", "-Command", command],
+                    creationflags=_sp.CREATE_NEW_CONSOLE,
+                )
+            task.pid = 0  # We don't track the PID for terminal-spawned processes
+        else:
+            task.status = "failed"
+            task.error = "Claude CLI not found. Install it first."
+            task.completed_at = datetime.now()
+            return
 
         # Monitor the output file for completion
         output_file = Path(work_dir) / ".jarvis_output.txt"
@@ -1281,11 +1295,20 @@ def _refresh_context_sync():
             # Weather — refresh every loop (30s is fine, API is fast)
             try:
                 import urllib.request, json as _json
-                url = "https://api.open-meteo.com/v1/forecast?latitude=27.77&longitude=-82.64&current=temperature_2m,weathercode&temperature_unit=fahrenheit"
+                # Auto-detect location from IP first
+                try:
+                    with urllib.request.urlopen("https://ipapi.co/json/", timeout=3) as loc_resp:
+                        loc = _json.loads(loc_resp.read())
+                        lat = loc.get("latitude", 17.38)
+                        lon = loc.get("longitude", 78.49)
+                        city = loc.get("city", "your area")
+                except Exception:
+                    lat, lon, city = 17.38, 78.49, "Hyderabad"
+                url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weathercode&temperature_unit=celsius"
                 with urllib.request.urlopen(url, timeout=3) as resp:
                     d = _json.loads(resp.read()).get("current", {})
                     temp = d.get("temperature_2m", "?")
-                    _ctx_cache["weather"] = f"Current weather in St. Petersburg, FL: {temp}°F"
+                    _ctx_cache["weather"] = f"Current weather in {city}: {temp}°C"
             except Exception:
                 pass
 
@@ -1316,7 +1339,7 @@ app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:8340", "http://127.0.0.1:5173", "http://127.0.0.1:8340"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2474,8 +2497,10 @@ async def api_restart():
     log.info("Restart requested — shutting down in 2 seconds")
     async def _restart():
         await asyncio.sleep(2)
+        import subprocess as _sp
         cmd = [sys.executable, __file__, "--port", "8340", "--host", "0.0.0.0"]
-        os.execv(sys.executable, cmd)
+        _sp.Popen(cmd, creationflags=_sp.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0)
+        os._exit(0)
     asyncio.create_task(_restart())
     return {"status": "restarting"}
 

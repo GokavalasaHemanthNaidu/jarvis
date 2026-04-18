@@ -49,7 +49,7 @@ class WorkSession:
     async def start(self, working_dir: str, project_name: str = None):
         """Start or switch to a project session."""
         self._working_dir = working_dir
-        self._project_name = project_name or working_dir.split("/")[-1]
+        self._project_name = project_name or Path(working_dir).name
         self._active = True
         self._message_count = 0
         self._status = "idle"

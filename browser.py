@@ -173,15 +173,14 @@ class JarvisBrowser:
             """)
 
             text = data.get("text", "")
+            # Let user see the page for a moment
+            await asyncio.sleep(3)
             return PageContent(
                 title=data.get("title", ""),
                 url=url,
                 text_content=text,
                 word_count=len(text.split()),
             )
-
-            # Let user see the page for a moment
-            await asyncio.sleep(3)
         except Exception as e:
             log.warning(f"Visit failed for '{url}': {e}")
             return PageContent(
